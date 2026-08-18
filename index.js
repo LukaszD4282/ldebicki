@@ -5,6 +5,7 @@ var webhook = require("webex-node-bot-framework/webhook");
 var express = require("express");
 var bodyParser = require("body-parser");
 var deploymentFunctions = require("./lib/deployment-functions");
+var jiraTrackingFunctions = require("./lib/jira-tracker");
 var parseSubmission = deploymentFunctions.parseSubmission;
 var lookupCxDeployment = deploymentFunctions.lookupCxDeployment;
 var lookupCommitBuilds = deploymentFunctions.lookupCommitBuilds;
@@ -13,6 +14,8 @@ var formatDeploymentReport = deploymentFunctions.formatDeploymentReport;
 var formatCommitBuildsReport = deploymentFunctions.formatCommitBuildsReport;
 var formatBuildCommitsReport = deploymentFunctions.formatBuildCommitsReport;
 var formatLookupError = deploymentFunctions.formatLookupError;
+var isValidJiraKey = jiraTrackingFunctions.isValidJiraKey;
+var runJiraTracker = jiraTrackingFunctions.runJiraTracker;
 var app = express();
 app.use(bodyParser.json());
 app.use(express.static("images"));
@@ -278,6 +281,134 @@ const commandForm = {
     },
   ],
 };
+
+function createJiraTrackerCard() {
+  return {
+    $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+    type: "AdaptiveCard",
+    version: "1.0",
+    body: [
+      {
+        type: "TextBlock",
+        text: "Jira release tracker",
+        weight: "Bolder",
+        size: "Medium",
+      },
+      {
+        type: "TextBlock",
+        text: "Enter a Jira key:",
+        wrap: true,
+      },
+      {
+        type: "Input.Text",
+        id: "jiraKey",
+        placeholder: "CX-12345",
+      },
+      {
+        type: "TextBlock",
+        text: "Which release branches should be returned?",
+        wrap: true,
+      },
+      {
+        type: "Input.ChoiceSet",
+        id: "resultMode",
+        style: "expanded",
+        isMultiSelect: false,
+        value: "all",
+        choices: [
+          {
+            title: "All",
+            value: "all",
+          },
+          {
+            title: "Earliest",
+            value: "earliest",
+          },
+        ],
+      },
+    ],
+    actions: [
+      {
+        type: "Action.Submit",
+        title: "Run tracker",
+        data: {
+          action: "runJiraTracker",
+        },
+      },
+    ],
+  };
+}
+
+async function handleAttachmentAction(bot, trigger) {
+  const inputs = trigger?.attachmentAction?.inputs || {};
+
+  if (inputs.action !== "runJiraTracker") {
+    return;
+  }
+
+  const jiraKey =
+    typeof inputs.jiraKey === "string"
+      ? inputs.jiraKey.trim().toUpperCase()
+      : inputs.jiraKey;
+  const selectedModes =
+    typeof inputs.resultMode === "string"
+      ? inputs.resultMode.split(",").map((mode) => mode.trim())
+      : [];
+  const resultMode = selectedModes.includes("earliest") ? "earliest" : "all";
+
+  if (
+    !isValidJiraKey(jiraKey) ||
+    !selectedModes.length ||
+    selectedModes.some((mode) => mode !== "all" && mode !== "earliest")
+  ) {
+    try {
+      await bot.say("Invalid Jira tracker options supplied by the card.");
+    } catch (error) {
+      console.error(`Failed to report invalid tracker input: ${error.message}`);
+    }
+    return;
+  }
+
+  try {
+    await bot.say(`Checking release branch history for ${jiraKey}...`);
+    const output = await runJiraTracker(jiraKey, resultMode);
+    await bot.say("markdown", `**${jiraKey}**\n\n${output}`);
+  } catch (error) {
+    console.error(`Jira tracker failed: ${error.message}`);
+
+    try {
+      await bot.say(
+        `Unable to check release branches for ${jiraKey}. Please try again later.`
+      );
+    } catch (replyError) {
+      console.error(
+        `Failed to report Jira tracker error: ${replyError.message}`
+      );
+    }
+  }
+}
+
+framework.on("attachmentAction", (bot, trigger) => {
+  handleAttachmentAction(bot, trigger).catch((error) => {
+    console.error(`Unexpected attachment action failure: ${error.message}`);
+  });
+});
+
+framework.hears(
+  "track",
+  (bot) => {
+    bot
+      .sendCard(
+        createJiraTrackerCard(),
+        "Enter a Jira key and choose whether to return all release branches or only the earliest branch."
+      )
+      .catch((error) => {
+        console.error(`Failed to send Jira tracker card: ${error.message}`);
+      });
+  },
+  "**track**: (open the Jira release tracker)",
+  0
+);
 
 framework.hears(
   /(^| )commits?( |$)/i,
