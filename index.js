@@ -10,9 +10,11 @@ var parseSubmission = deploymentFunctions.parseSubmission;
 var lookupCxDeployment = deploymentFunctions.lookupCxDeployment;
 var lookupCommitBuilds = deploymentFunctions.lookupCommitBuilds;
 var lookupBuildCommits = deploymentFunctions.lookupBuildCommits;
+var lookupBranchCommits = deploymentFunctions.lookupBranchCommits;
 var formatDeploymentReport = deploymentFunctions.formatDeploymentReport;
 var formatCommitBuildsReport = deploymentFunctions.formatCommitBuildsReport;
 var formatBuildCommitsReport = deploymentFunctions.formatBuildCommitsReport;
+var formatBranchCommitsReport = deploymentFunctions.formatBranchCommitsReport;
 var formatLookupError = deploymentFunctions.formatLookupError;
 var isValidJiraKey = jiraTrackingFunctions.isValidJiraKey;
 var runJiraTracker = jiraTrackingFunctions.runJiraTracker;
@@ -178,6 +180,18 @@ const listForm = createLookupForm({
   formType: "list",
 });
 
+const branchForm = createLookupForm({
+  title: "Inspect a release branch",
+  description:
+    "List commits added since the immediately preceding wxcc-desktop release branch.",
+  label: "Release branch name",
+  inputId: "branchName",
+  placeholder: "e.g. wxcc-desktop-release-26-07-1226",
+  hint: "Enter the complete branch name. Up to 50 commits are shown.",
+  actionTitle: "List branch commits",
+  formType: "branch",
+});
+
 const commandForm = {
   $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
   type: "AdaptiveCard",
@@ -196,7 +210,7 @@ const commandForm = {
         },
         {
           type: "TextBlock",
-          text: "Track Jira deployments, locate commits, and inspect CDN builds.",
+          text: "Track Jira releases and deployments, locate commits, and inspect CDN builds or release branches.",
           wrap: true,
           isSubtle: true,
           spacing: "Small",
@@ -262,6 +276,57 @@ const commandForm = {
         },
       ],
     },
+    {
+      type: "Container",
+      separator: true,
+      spacing: "Medium",
+      items: [
+        {
+          type: "TextBlock",
+          text: "branch: List commits added since the preceding release branch",
+          weight: "Bolder",
+          color: "Accent",
+          wrap: true,
+        },
+        {
+          type: "Input.Text",
+          id: "branchName",
+          placeholder: "e.g. wxcc-desktop-release-26-07-1226",
+          spacing: "Small",
+        },
+      ],
+    },
+    {
+      type: "Container",
+      separator: true,
+      spacing: "Medium",
+      items: [
+        {
+          type: "TextBlock",
+          text: "track: Find release branches containing a Jira",
+          weight: "Bolder",
+          color: "Accent",
+          wrap: true,
+        },
+        {
+          type: "Input.Text",
+          id: "trackerJiraKey",
+          placeholder: "e.g. CX-12345",
+          spacing: "Small",
+        },
+        {
+          type: "Input.ChoiceSet",
+          id: "trackerResultMode",
+          style: "expanded",
+          isMultiSelect: false,
+          value: "all",
+          choices: [
+            { title: "All release branches", value: "all" },
+            { title: "Earliest release branch", value: "earliest" },
+          ],
+        },
+      ],
+    },
   ],
   actions: [
     {
@@ -278,6 +343,16 @@ const commandForm = {
       type: "Action.Submit",
       title: "List build",
       data: { formType: "list" },
+    },
+    {
+      type: "Action.Submit",
+      title: "List branch",
+      data: { formType: "branch" },
+    },
+    {
+      type: "Action.Submit",
+      title: "Track Jira release",
+      data: { action: "runJiraTracker" },
     },
   ],
 };
@@ -346,13 +421,23 @@ async function handleAttachmentAction(bot, trigger) {
     return;
   }
 
+  const isExplorerSubmission = Object.prototype.hasOwnProperty.call(
+    inputs,
+    "trackerJiraKey"
+  );
+  const submittedJiraKey = isExplorerSubmission
+    ? inputs.trackerJiraKey
+    : inputs.jiraKey;
   const jiraKey =
-    typeof inputs.jiraKey === "string"
-      ? inputs.jiraKey.trim().toUpperCase()
-      : inputs.jiraKey;
+    typeof submittedJiraKey === "string"
+      ? submittedJiraKey.trim().toUpperCase()
+      : submittedJiraKey;
+  const submittedResultMode = isExplorerSubmission
+    ? inputs.trackerResultMode
+    : inputs.resultMode;
   const selectedModes =
-    typeof inputs.resultMode === "string"
-      ? inputs.resultMode.split(",").map((mode) => mode.trim())
+    typeof submittedResultMode === "string"
+      ? submittedResultMode.split(",").map((mode) => mode.trim())
       : [];
   const resultMode = selectedModes.includes("earliest") ? "earliest" : "all";
 
@@ -438,11 +523,20 @@ framework.hears(
 );
 
 framework.hears(
+  "branch",
+  (bot) => {
+    return bot.sendCard(branchForm, "Please enter a release branch name.");
+  },
+  "**branch**: list the commits in a release branch",
+  0
+);
+
+framework.hears(
   "help",
   (bot) => {
     return bot.sendCard(
       commandForm,
-      "CDN Deployment Explorer: use commit, jira, or list."
+      "CDN Deployment Explorer: use commit, jira, list, branch, or track."
     );
   },
   "**help**: list the available commands",
@@ -452,7 +546,10 @@ framework.hears(
 framework.hears(
   /.*/,
   (bot) => {
-    return bot.sendCard(commandForm, "Available commands: commit, jira, list");
+    return bot.sendCard(
+      commandForm,
+      "Available commands: commit, jira, list, branch, track"
+    );
   },
   99999
 );
@@ -472,6 +569,7 @@ framework.on("attachmentAction", (bot, trigger) => {
     jira: [lookupCxDeployment, formatDeploymentReport, "CDN builds"],
     commits: [lookupCommitBuilds, formatCommitBuildsReport, "CDN builds"],
     list: [lookupBuildCommits, formatBuildCommitsReport, "build commits"],
+    branch: [lookupBranchCommits, formatBranchCommitsReport, "branch commits"],
   };
   const [lookup, format, description] = handlers[submission.type];
 
